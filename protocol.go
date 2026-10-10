@@ -248,9 +248,290 @@ func decodeVideoStream(data []byte) (VideoStream, error) {
 	return stream, nil
 }
 
-func decodeTrackResult(data []byte) (*TrackResult, error) {
+func decodeTrackData(data []byte, res *TrackResult) error {
+	r := newProtoReader(data)
+	for r.hasMore() {
+		field, wire, err := r.readTag()
+		if err != nil {
+			return err
+		}
+		switch field {
+		case 1:
+			s, err := r.readString()
+			if err != nil {
+				return err
+			}
+			res.ID = s
+			res.Query = s
+		case 2:
+			s, err := r.readString()
+			if err != nil {
+				return err
+			}
+			res.Title = s
+		case 3:
+			s, err := r.readString()
+			if err != nil {
+				return err
+			}
+			res.Author = s
+		case 4:
+			s, err := r.readString()
+			if err != nil {
+				return err
+			}
+			res.Uploader = s
+		case 5:
+			s, err := r.readString()
+			if err != nil {
+				return err
+			}
+			res.ArtistAvatar = s
+		case 6:
+			v, err := r.readVarint()
+			if err != nil {
+				return err
+			}
+			res.DurationSeconds = int(v)
+		case 7:
+			s, err := r.readString()
+			if err != nil {
+				return err
+			}
+			res.Thumbnail = s
+		case 8:
+			b, err := r.readBytes()
+			if err != nil {
+				return err
+			}
+			th, err := decodeThumbnail(b)
+			if err != nil {
+				return err
+			}
+			res.Thumbnails = append(res.Thumbnails, th)
+		case 9:
+			b, err := r.readBytes()
+			if err != nil {
+				return err
+			}
+			as, err := decodeAudioStream(b)
+			if err != nil {
+				return err
+			}
+			res.BestAudio = &as
+		case 10:
+			b, err := r.readBytes()
+			if err != nil {
+				return err
+			}
+			vs, err := decodeVideoStream(b)
+			if err != nil {
+				return err
+			}
+			res.BestVideo = &vs
+		case 11:
+			b, err := r.readBytes()
+			if err != nil {
+				return err
+			}
+			as, err := decodeAudioStream(b)
+			if err != nil {
+				return err
+			}
+			res.AudioStreams = append(res.AudioStreams, as)
+		case 12:
+			b, err := r.readBytes()
+			if err != nil {
+				return err
+			}
+			vs, err := decodeVideoStream(b)
+			if err != nil {
+				return err
+			}
+			res.VideoStreams = append(res.VideoStreams, vs)
+		default:
+			if err := r.skip(wire); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func decodeMeta(data []byte, res *TrackResult) error {
+	r := newProtoReader(data)
+	for r.hasMore() {
+		field, wire, err := r.readTag()
+		if err != nil {
+			return err
+		}
+		switch field {
+		case 1:
+			if wire == 0 {
+				v, _ := r.readVarint()
+				res.LatencyMs = float64(v)
+			} else {
+				d, _ := r.readDouble()
+				res.LatencyMs = d
+			}
+		default:
+			if err := r.skip(wire); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func decodeError(data []byte) (*TypeTubeError, error) {
+	r := newProtoReader(data)
+	errObj := &TypeTubeError{StatusCode: 500}
+	for r.hasMore() {
+		field, wire, err := r.readTag()
+		if err != nil {
+			return nil, err
+		}
+		switch field {
+		case 1:
+			s, err := r.readString()
+			if err != nil {
+				return nil, err
+			}
+			_ = s
+		case 2:
+			s, err := r.readString()
+			if err != nil {
+				return nil, err
+			}
+			errObj.Message = s
+		case 3:
+			v, err := r.readVarint()
+			if err != nil {
+				return nil, err
+			}
+			errObj.StatusCode = int(v)
+		default:
+			if err := r.skip(wire); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return errObj, nil
+}
+
+func decodeFlatTrackResult(data []byte) (*TrackResult, error) {
 	r := newProtoReader(data)
 	res := &TrackResult{
+		Success:      true,
+		Thumbnails:   make([]Thumbnail, 0),
+		AudioStreams: make([]AudioStream, 0),
+		VideoStreams: make([]VideoStream, 0),
+	}
+	for r.hasMore() {
+		field, wire, err := r.readTag()
+		if err != nil {
+			return nil, err
+		}
+		switch field {
+		case 1:
+			v, err := r.readVarint()
+			if err != nil {
+				return nil, err
+			}
+			res.Success = v == 1
+		case 2:
+			s, _ := r.readString()
+			res.Query = s
+		case 3:
+			s, _ := r.readString()
+			res.ID = s
+		case 4:
+			s, _ := r.readString()
+			res.Title = s
+		case 5:
+			s, _ := r.readString()
+			res.Author = s
+		case 6:
+			s, _ := r.readString()
+			res.Uploader = s
+		case 7:
+			s, _ := r.readString()
+			res.ArtistAvatar = s
+		case 8:
+			v, _ := r.readVarint()
+			res.DurationSeconds = int(v)
+		case 9:
+			s, _ := r.readString()
+			res.Thumbnail = s
+		case 10:
+			b, _ := r.readBytes()
+			th, _ := decodeThumbnail(b)
+			res.Thumbnails = append(res.Thumbnails, th)
+		case 11:
+			if wire == 0 {
+				v, _ := r.readVarint()
+				res.LatencyMs = float64(v)
+			} else {
+				d, _ := r.readDouble()
+				res.LatencyMs = d
+			}
+		case 12:
+			b, _ := r.readBytes()
+			as, _ := decodeAudioStream(b)
+			res.BestAudio = &as
+		case 13:
+			b, _ := r.readBytes()
+			vs, _ := decodeVideoStream(b)
+			res.BestVideo = &vs
+		case 14:
+			b, _ := r.readBytes()
+			as, _ := decodeAudioStream(b)
+			res.AudioStreams = append(res.AudioStreams, as)
+		case 15:
+			b, _ := r.readBytes()
+			vs, _ := decodeVideoStream(b)
+			res.VideoStreams = append(res.VideoStreams, vs)
+		default:
+			_ = r.skip(wire)
+		}
+	}
+	return res, nil
+}
+
+func decodeTrackResult(data []byte) (*TrackResult, error) {
+	// Probe to see if this is flat format (field 1: varint, field 2: string query, field 3: string id)
+	// or TAP envelope (field 1: varint, field 2: message trackData, field 3: message meta)
+	pr := newProtoReader(data)
+	isFlat := false
+	for pr.hasMore() {
+		f, w, err := pr.readTag()
+		if err != nil {
+			break
+		}
+		if f == 3 && w == 2 {
+			// In flat format, field 3 is string id (length is usually <= 64)
+			// In TAP envelope, field 3 is meta message (wire type 2)
+		}
+		if f == 4 && w == 2 {
+			// In flat format, field 4 is string title!
+			// In envelope, field 4 is error message
+			// We can check if field 14 or 15 appears:
+			isFlat = true
+			break
+		}
+		if f > 4 {
+			break
+		}
+		_ = pr.skip(w)
+	}
+
+	if isFlat {
+		return decodeFlatTrackResult(data)
+	}
+
+	r := newProtoReader(data)
+	res := &TrackResult{
+		Success:      false,
 		Thumbnails:   make([]Thumbnail, 0),
 		AudioStreams: make([]AudioStream, 0),
 		VideoStreams: make([]VideoStream, 0),
@@ -269,115 +550,35 @@ func decodeTrackResult(data []byte) (*TrackResult, error) {
 			}
 			res.Success = v == 1
 		case 2:
-			s, err := r.readString()
+			b, err := r.readBytes()
 			if err != nil {
 				return nil, err
 			}
-			res.Query = s
+			if err := decodeTrackData(b, res); err != nil {
+				return nil, err
+			}
 		case 3:
-			s, err := r.readString()
+			b, err := r.readBytes()
 			if err != nil {
 				return nil, err
 			}
-			res.ID = s
+			_ = decodeMeta(b, res)
 		case 4:
-			s, err := r.readString()
-			if err != nil {
-				return nil, err
-			}
-			res.Title = s
-		case 5:
-			s, err := r.readString()
-			if err != nil {
-				return nil, err
-			}
-			res.Author = s
-		case 6:
-			s, err := r.readString()
-			if err != nil {
-				return nil, err
-			}
-			res.Uploader = s
-		case 7:
-			s, err := r.readString()
-			if err != nil {
-				return nil, err
-			}
-			res.ArtistAvatar = s
-		case 8:
-			v, err := r.readVarint()
-			if err != nil {
-				return nil, err
-			}
-			res.DurationSeconds = int(v)
-		case 9:
-			s, err := r.readString()
-			if err != nil {
-				return nil, err
-			}
-			res.Thumbnail = s
-		case 10:
 			b, err := r.readBytes()
 			if err != nil {
 				return nil, err
 			}
-			th, err := decodeThumbnail(b)
-			if err != nil {
-				return nil, err
+			apiErr, _ := decodeError(b)
+			if apiErr != nil {
+				return nil, apiErr
 			}
-			res.Thumbnails = append(res.Thumbnails, th)
-		case 11:
-			d, err := r.readDouble()
-			if err != nil {
-				return nil, err
-			}
-			res.LatencyMs = d
-		case 12:
-			b, err := r.readBytes()
-			if err != nil {
-				return nil, err
-			}
-			as, err := decodeAudioStream(b)
-			if err != nil {
-				return nil, err
-			}
-			res.BestAudio = &as
-		case 13:
-			b, err := r.readBytes()
-			if err != nil {
-				return nil, err
-			}
-			vs, err := decodeVideoStream(b)
-			if err != nil {
-				return nil, err
-			}
-			res.BestVideo = &vs
-		case 14:
-			b, err := r.readBytes()
-			if err != nil {
-				return nil, err
-			}
-			as, err := decodeAudioStream(b)
-			if err != nil {
-				return nil, err
-			}
-			res.AudioStreams = append(res.AudioStreams, as)
-		case 15:
-			b, err := r.readBytes()
-			if err != nil {
-				return nil, err
-			}
-			vs, err := decodeVideoStream(b)
-			if err != nil {
-				return nil, err
-			}
-			res.VideoStreams = append(res.VideoStreams, vs)
 		default:
 			if err := r.skip(wire); err != nil {
 				return nil, err
 			}
 		}
 	}
+
 	return res, nil
 }
 
@@ -400,46 +601,27 @@ func decodeSearchResults(data []byte) ([]SearchItem, error) {
 			for ir.hasMore() {
 				ifield, iwire, err := ir.readTag()
 				if err != nil {
-					return nil, err
+					break
 				}
 				switch ifield {
 				case 1:
-					s, err := ir.readString()
-					if err != nil {
-						return nil, err
-					}
-					item.ID = s
+					item.ID, _ = ir.readString()
 				case 2:
-					s, err := ir.readString()
-					if err != nil {
-						return nil, err
-					}
-					item.Title = s
+					item.Title, _ = ir.readString()
 				case 3:
-					s, err := ir.readString()
-					if err != nil {
-						return nil, err
-					}
-					item.URL = s
+					item.URL, _ = ir.readString()
 				case 4:
-					v, err := ir.readVarint()
-					if err != nil {
-						return nil, err
-					}
+					v, _ := ir.readVarint()
 					item.Duration = int(v)
 				case 5:
-					s, err := ir.readString()
-					if err != nil {
-						return nil, err
-					}
-					item.Uploader = s
+					item.Uploader, _ = ir.readString()
 				default:
-					if err := ir.skip(iwire); err != nil {
-						return nil, err
-					}
+					_ = ir.skip(iwire)
 				}
 			}
-			items = append(items, item)
+			if item.ID != "" || item.Title != "" {
+				items = append(items, item)
+			}
 		default:
 			if err := r.skip(wire); err != nil {
 				return nil, err

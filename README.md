@@ -1,17 +1,15 @@
 # typetube-go
 
-Official Go client library for the TypeTube streaming API.
-
-Zero external dependencies. Implemented entirely with the Go standard library (net/http, encoding/binary, sync, os).
+High-performance TypeTube streaming client for Go with native TAP binary protocol support and concurrent range downloads.
 
 ## Features
 
-- Native Protocol Buffers wire decoding (fast binary responses from /v1/resolve and /v1/search)
-- Concurrent chunked range downloading using goroutines with automatic linear fallback
-- High precision stream resolution (/v1/resolve)
-- Video search (/v1/search)
-- Quota and usage inspection (/v1/usage)
-- Configurable timeouts, custom endpoints, and API key authentication
+- **TAP Binary Protocol**: Direct TCP binary framing with sequence IDs, cryptographic session negotiation (ECDH P-256 + AES-256-GCM), and low latency multiplexing.
+- **Pure Go Compression**: Zstandard (`zstd`), Brotli, and Deflate stream decompression.
+- **Multi-Worker Range Downloader**: High-speed chunked downloads with goroutine worker pools and direct sparse writes (`os.File.WriteAt`).
+- **Media Download & Muxing**: `DownloadAudio`, `DownloadVideo`, and combined `DownloadMedia` with automated FFmpeg muxing.
+- **IPv4 Socket Binding**: Dedicated dialer enforcing IPv4 TCP connections to avoid IPv6 rate-limiting.
+- **Regional 403 Error Handling**: Clear error responses when streams are restricted to the resolver cluster's region.
 
 ## Installation
 
@@ -28,37 +26,47 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/playeon/typetube-go"
 )
 
 func main() {
+	// Connect directly to a TAP cluster
 	client := typetube.NewClient(
-		typetube.WithHost("https://typetube.xysushi.in"),
+		typetube.WithHost("tap://sg.clusters.typetube.xyz:8443"),
 		typetube.WithAPIKey("your_api_key_here"),
+		typetube.WithTimeout(15*time.Second),
 	)
+	defer client.Close()
 
 	ctx := context.Background()
 
+	// Measure TAP ping latency
+	latency, err := client.Ping(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Cluster ping latency: %v\n", latency)
+
+	// Resolve track
 	track, err := client.Resolve(ctx, "Rick Astley - Never Gonna Give You Up")
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	fmt.Printf("Resolved: %s by %s (%ds)\n", track.Title, track.Author, track.DurationSeconds)
-	if track.BestAudio != nil {
-		fmt.Printf("Best Audio URL: %s\n", track.BestAudio.URL)
-	}
 
-	res, err := client.DownloadAudio(ctx, track, "track.m4a", typetube.DownloadConfig{
-		Workers: 8,
+	// High-speed chunked audio download
+	dl, err := client.DownloadAudio(ctx, track, "./downloads", typetube.DownloadConfig{
+		Workers: 6,
+		ProgressCallback: func(p typetube.DownloadProgress) {
+			fmt.Printf("\rDownload: %.1f%% (%.2f MB/s)", p.Percent, p.SpeedMbps)
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Printf("Downloaded %d bytes to %s in %.2fs (%.2f MB/s)\n",
-		res.SizeBytes, res.FilePath, res.DurationSec, res.SpeedMbps)
+	fmt.Printf("\nSaved to %s (%d bytes in %.2fs)\n", dl.FilePath, dl.SizeBytes, dl.DurationSec)
 }
 ```
 
@@ -66,7 +74,7 @@ func main() {
 
 ### Stream Resolution
 
-Resolve YouTube videos by search query, video ID, or direct URL:
+Pass either a search query, YouTube video ID, or video URL:
 
 ```go
 track, err := client.Resolve(ctx, "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
@@ -78,14 +86,11 @@ fmt.Printf("Title: %s\n", track.Title)
 fmt.Printf("Author: %s\n", track.Author)
 fmt.Printf("Duration: %d seconds\n", track.DurationSeconds)
 if track.BestAudio != nil {
-	fmt.Printf("Bitrate: %d bps\n", track.BestAudio.Bitrate)
-	fmt.Printf("MIME: %s\n", track.BestAudio.MimeType)
+	fmt.Printf("Bitrate: %d bps, Quality: %s\n", track.BestAudio.Bitrate, track.BestAudio.Quality)
 }
 ```
 
 ### Video Search
-
-Search for tracks with custom limits:
 
 ```go
 results, err := client.Search(ctx, "Hans Zimmer Interstellar", 5)
@@ -98,43 +103,39 @@ for _, item := range results {
 }
 ```
 
-### Concurrent Chunked Audio Download
+### Audio, Video, and Media Downloads
 
-Download audio files using parallel HTTP range requests with configurable worker counts and chunk sizes:
-
-```go
-cfg := typetube.DownloadConfig{
-	Workers:        8,
-	ChunkSizeBytes: 1024 * 1024,
-	Quality:        "highest",
-	ProgressCallback: func(p typetube.DownloadProgress) {
-		fmt.Printf("\rProgress: %.1f%% (%d/%d bytes) at %.2f MB/s",
-			p.Percent, p.DownloadedBytes, p.TotalBytes, p.SpeedMbps)
-	},
-}
-
-dl, err := client.DownloadAudio(ctx, track, "interstellar.m4a", cfg)
-if err != nil {
-	log.Fatal(err)
-}
-
-fmt.Printf("\nCompleted: %s (%.2f MB)\n", dl.FilePath, dl.FileSizeMB)
-```
-
-### Quota and Usage
-
-Check quota limits and remaining calls:
+All download methods accept either a search query string or a pre-resolved `*TrackResult`:
 
 ```go
-usage, err := client.Usage(ctx)
-if err != nil {
-	log.Fatal(err)
-}
+// 1. Audio download (m4a / opus)
+dlAudio, err := client.DownloadAudio(ctx, track, "audio.m4a", typetube.DownloadConfig{
+	Workers: 6,
+	Quality: "highest", // "highest", "hifi", "128kbps"
+})
 
-fmt.Printf("Tier: %s\n", usage.KeyType)
-fmt.Printf("Remaining: %d/%d\n", usage.Remaining, usage.Limit)
-fmt.Printf("Reset in: %d seconds\n", usage.ResetInSeconds)
+// 2. Video download (mp4 / webm)
+dlVideo, err := client.DownloadVideo(ctx, track, "video.mp4", typetube.DownloadConfig{
+	Workers: 6,
+	Quality: "1080p", // "1080p", "720p", "480p", "360p"
+})
+
+// 3. Combined Video + Audio muxed with FFmpeg
+dlMedia, err := client.DownloadMedia(ctx, track, "media.mp4", typetube.DownloadConfig{
+	Workers: 6,
+	Quality: "1080p",
+})
 ```
+
+### Regional Restriction Handling
+
+When a track stream URL is geographically restricted by Google CDN to the resolver cluster's region, the client returns a clean error:
+
+```text
+Stream download forbidden (HTTP 403): track restricted to the cluster's region
+```
+
+Connect to an alternative cluster (such as `tap://sg.clusters.typetube.xyz` or `tap://nl.clusters.typetube.xyz`) when encountering regional blocks.
 
 ## License
 
